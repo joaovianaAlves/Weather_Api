@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Estação Meteorológica</title>
+    <!-- Font Awesome for Icons -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"
+      integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+    <!-- Axios for HTTP Requests -->
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+      /* Reset básico */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      /* Base styles */
+      body {
+        font-family: "Arial", sans-serif;
+        background: linear-gradient(135deg, #f0f8ff, #e0ffff);
+        color: #333;
+        min-height: 100vh;
+        transition: background 0.3s ease, color 0.3s ease;
+      }
+
+      /* Navbar styles */
+      .navbar {
+        background-color: #333;
+        width: 100%;
+        padding: 1rem;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 1000;
+      }
+
+      .nav-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        position: relative;
+      }
+
+      .nav-logo {
+        color: #fff;
+        font-size: 1.5rem;
+        font-weight: bold;
+        text-decoration: none;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .nav-logo i {
+        color: #ffc107;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 2rem;
+        list-style: none;
+        margin-left: auto;
+        margin-right: 1rem;
+      }
+
+      .nav-links a {
+        color: #fff;
+        text-decoration: none;
+        font-size: 1rem;
+        transition: color 0.3s ease;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .nav-links a:hover {
+        color: #ffc107;
+      }
+
+      .nav-mobile-menu {
+        display: none;
+        color: #fff;
+        font-size: 1.5rem;
+        cursor: pointer;
+      }
+
+      /* Theme toggle styles */
+      .theme-toggle {
+        position: relative;
+        font-size: 1.5rem;
+        cursor: pointer;
+        color: #fff;
+        background: none;
+        border: none;
+        padding: 0.5rem;
+        transition: color 0.3s ease;
+      }
+
+      .theme-toggle:hover {
+        color: #ffc107;
+      }
+
+      /* Main content styles */
+      .main-content {
+        max-width: 1200px;
+        margin: 8rem auto 2rem;
+        padding: 2rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      h1 {
+        font-size: 2.5rem;
+        margin-bottom: 30px;
+        text-transform: uppercase;
+        letter-spacing: 3px;
+        color: #007bff;
+        text-align: center;
+      }
+
+      .container {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+        width: 100%;
+      }
+
+      .tile {
+        background-color: #fff;
+        border-radius: 20px;
+        padding: 30px;
+        text-align: center;
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      .tile:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+      }
+
+      .tile i {
+        font-size: 3rem;
+        margin-bottom: 20px;
+        color: #ffc107;
+      }
+
+      .tile strong {
+        font-size: 1.8rem;
+        display: block;
+        margin-bottom: 10px;
+      }
+
+      .tile span {
+        font-size: 1.4rem;
+        font-weight: 300;
+        color: #666;
+      }
+
+      /* Footer styles */
+      footer {
+        text-align: center;
+        padding: 2rem;
+        margin-top: auto;
+      }
+
+      footer a {
+        color: #007bff;
+        text-decoration: none;
+        transition: color 0.3s ease;
+      }
+
+      footer a:hover {
+        color: #ffc107;
+      }
+
+      /* Dark mode styles */
+      body.dark-mode {
+        background: #1a1a1a;
+        color: #eee;
+      }
+
+      body.dark-mode .navbar {
+        background-color: #222;
+      }
+
+      body.dark-mode .tile {
+        background-color: #333;
+        color: #eee;
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+      }
+
+      body.dark-mode .tile:hover {
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+      }
+
+      body.dark-mode .tile span {
+        color: #ddd;
+      }
+
+      body.dark-mode h1 {
+        color: #ffc107;
+      }
+
+      body.dark-mode footer a {
+        color: #ffc107;
+      }
+
+      /* Responsive styles */
+      @media (max-width: 768px) {
+        .nav-container {
+          padding: 0 1rem;
+        }
+
+        .nav-links {
+          display: none;
+          position: absolute;
+          top: 100%;
+          left: 0;
+          width: 100%;
+          background-color: #333;
+          padding: 0;
+          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .nav-links.active {
+          display: flex;
+          flex-direction: column;
+          padding: 1rem;
+        }
+
+        .nav-links li {
+          width: 100%;
+        }
+
+        .nav-links a {
+          padding: 0.8rem 0;
+          width: 100%;
+          justify-content: flex-start;
+        }
+
+        .nav-mobile-menu {
+          display: block;
+          margin-left: auto;
+        }
+
+        h1 {
+          font-size: 2rem;
+        }
+
+        .tile strong {
+          font-size: 1.5rem;
+        }
+
+        .tile span {
+          font-size: 1.2rem;
+        }
+      }
+
+      body.dark-mode .nav-links.active {
+        background-color: #222;
+        border-top: 1px solid #333;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+      <div class="nav-container">
+        <a href="#" class="nav-logo">
+          <i class="fas fa-cloud-sun"></i> Estação Meteorológica
+        </a>
+        <ul class="nav-links">
+          <li>
+            <a href="#"><i class="fas fa-home"></i> Início</a>
+          </li>
+          <li>
+            <a href="#"><i class="fas fa-chart-line"></i> Histórico</a>
+          </li>
+          <li>
+            <a href="#"><i class="fas fa-cog"></i> Configurações</a>
+          </li>
+          <li>
+            <a href="#"><i class="fas fa-info-circle"></i> Sobre</a>
+          </li>
+        </ul>
+        <div class="nav-mobile-menu">
+          <i class="fas fa-bars"></i>
+        </div>
+        <button class="theme-toggle" aria-label="Alternar tema">
+          <i class="fas fa-adjust"></i>
+        </button>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <h1>Dados Meteorológicos</h1>
+      <div class="container">
+        <div class="tile">
+          <i class="fas fa-thermometer-half"></i>
+          <strong>Temperatura</strong>
+          <span id="temperature">--</span> °C
+        </div>
+        <div class="tile">
+          <i class="fas fa-tint"></i>
+          <strong>Umidade</strong>
+          <span id="humidity">--</span> %
+        </div>
+        <div class="tile">
+          <i class="fas fa-tachometer-alt"></i>
+          <strong>Pressão</strong>
+          <span id="pressure">--</span> hPa
+        </div>
+        <div class="tile">
+          <i class="fas fa-mountain"></i>
+          <strong>Altitude</strong>
+          <span id="altitude">--</span> metros
+        </div>
+      </div>
+    </main>
+
+    <!-- JavaScript Code -->
+    <script>
+      // Mobile Menu Toggle
+      const mobileMenuButton = document.querySelector(".nav-mobile-menu");
+      const navLinks = document.querySelector(".nav-links");
+
+      mobileMenuButton.addEventListener("click", (e) => {
+        e.stopPropagation();
+        navLinks.classList.toggle("active");
+      });
+
+      document.addEventListener("click", (e) => {
+        if (
+          navLinks.classList.contains("active") &&
+          !e.target.closest(".nav-links") &&
+          !e.target.closest(".nav-mobile-menu")
+        ) {
+          navLinks.classList.remove("active");
+        }
+      });
+
+      // Theme Toggle
+      function toggleTheme() {
+        const body = document.body;
+        const icon = document.querySelector(".theme-toggle i");
+
+        body.classList.toggle("dark-mode");
+        icon.classList.toggle("fa-sun");
+        icon.classList.toggle("fa-moon");
+
+        const isDarkMode = body.classList.contains("dark-mode");
+        localStorage.setItem("darkMode", isDarkMode);
+      }
+
+      function initializeTheme() {
+        const isDarkMode = localStorage.getItem("darkMode") === "true";
+        const icon = document.querySelector(".theme-toggle i");
+
+        if (isDarkMode) {
+          document.body.classList.add("dark-mode");
+          icon.classList.add("fa-moon");
+          icon.classList.remove("fa-adjust");
+        } else {
+          icon.classList.add("fa-sun");
+          icon.classList.remove("fa-moon");
+        }
+      }
+
+      document
+        .querySelector(".theme-toggle")
+        .addEventListener("click", toggleTheme);
+      window.addEventListener("load", initializeTheme);
+
+      // Fetching Sensor Data
+      function updateSensorData() {
+        axios
+          .get("/get_sensor_data")
+          .then((response) => {
+            const { temperature, humidity, pressure, altitude } = response.data;
+            document.getElementById("temperature").textContent = temperature;
+            document.getElementById("humidity").textContent = humidity;
+            document.getElementById("pressure").textContent = pressure;
+            document.getElementById("altitude").textContent = altitude;
+          })
+          .catch((error) => {
+            console.error("Erro ao buscar dados do sensor:", error);
+          });
+      }
+
+      updateSensorData();
+      setInterval(updateSensorData, 10000);
+    </script>
+  </body>
+</html>
