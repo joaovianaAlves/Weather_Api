@@ -1,66 +1,71 @@
+import os
 import board
 import logging
-from flask import Flask, jsonify, make_response, request
+from flask import Flask, jsonify
 from adafruit_bme280 import basic as adafruit_bme280
+from flask_cors import CORS
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-try:
-    i2c = board.I2C()
-    bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c, address=0x76)
-    bme280.sea_level_pressure = 1013.25
-except Exception as e:
-    logging.error(f"Error initializing BME280 sensor: {str(e)}")
-    bme280 = None
+# Setup CORS - adjust the origins as needed for production
+CORS(app, resources={r"/*": { 
+    "origins": "*",  # Replace with actual frontend domain in production
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allow_headers": ["Content-Type", "ngrok-skip-browser-warning", "Authorization", "X-Requested-With"],
+}})
 
-@app.route('/', methods=["GET", "OPTIONS"])
+# Initialize the BME280 sensor
+bme280 = None
+
+def initialize_sensor():
+    global bme280
+    try:
+        i2c = board.I2C()
+        bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c, address=0x76)
+        bme280.sea_level_pressure = 1013.25
+        logging.info("BME280 sensor initialized")
+    except Exception as e:
+        logging.error(f"Error initializing BME280 sensor: {str(e)}")
+        bme280 = None
+
+initialize_sensor()
+
+def get_sensor_readings():
+    global bme280
+    if bme280 is None:
+        # Attempt to reinitialize sensor if it's None
+        initialize_sensor()
+    
+    if bme280 is None:
+        return None
+
+    try:
+        return {
+            'temperature': round(bme280.temperature, 2),
+            'humidity': round(bme280.relative_humidity, 2),
+            'pressure': round(bme280.pressure, 2),
+            'altitude': round(bme280.altitude, 2)
+        }
+    except Exception as e:
+        logging.error(f"Error reading sensor data: {str(e)}")
+        return None
+
+@app.route('/', methods=["GET"])
 def get_sensor_data():
-    if request.method == "OPTIONS":
-        return _build_cors_preflight_response()
-    elif request.method == "GET":
-        if bme280 is None:
-            logging.error("BME280 sensor not initialized")
-            return jsonify({'error': 'Sensor not initialized'}), 500
+    sensor_data = get_sensor_readings()
+    if sensor_data is None:
+        logging.error("Failed to read sensor data")
+        return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
 
-        try:
-            temperature = round(bme280.temperature, 2)
-            humidity = round(bme280.relative_humidity, 2)
-            pressure = round(bme280.pressure, 2)
-            altitude = round(bme280.altitude, 2)
-            time = datetime.now()
-
-            data = {
-                'temperature': temperature,
-                'humidity': humidity,
-                'pressure': pressure,
-                'altitude': altitude,
-                'time': time.strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            response = jsonify(data)
-            return _corsify_actual_response(response)
-        except Exception as e:
-            logging.error(f"Error reading sensor data: {str(e)}")
-            return jsonify({'error': 'Error reading sensor data'}), 500
-    else:
-        raise RuntimeError("Weird - don't know how to handle method {}".format(request.method))
-
-def _build_cors_preflight_response():
-    response = make_response()
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add('Access-Control-Allow-Headers', "*")
-    response.headers.add('Access-Control-Allow-Methods', "*")
-    return response
-
-def _corsify_actual_response(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    return response
+    sensor_data['time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    return jsonify(sensor_data)
 
 if __name__ == '__main__':
     print("Weather Station is running. Access it at http://[RaspberryPi_IP]:5002")
     print("Press CTRL+C to quit")
-
+    
+    # Start the Flask server
     app.run(host='0.0.0.0', port=5002, debug=False)
