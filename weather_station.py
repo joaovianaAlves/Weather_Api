@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {
-    "origins": "https://iot-weather-aful94sig-joaovianaalves-projects.vercel.app",
+    "origins": "*",  # Allow any origin
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "allow_headers": ["Content-Type", "ngrok-skip-browser-warning"]
 }})
