@@ -2,6 +2,7 @@ import os
 import board
 import busio
 import logging
+import RPi.GPIO as GPIO
 from flask import Flask, jsonify
 from adafruit_bme280 import basic as adafruit_bme280
 from flask_cors import CORS
@@ -10,53 +11,119 @@ from pyngrok import ngrok
 import atexit
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
+import time
 
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": ["https://helpful-smart-chimp.ngrok-free.app", "*"], "allow_headers": ["Content-Type"]}})
 
-CORS(app, resources={r"/*": { 
-    "origins": [
-        "https://helpful-smart-chimp.ngrok-free.app",
-        "http://helpful-smart-chimp.ngrok-free.app",
-        "*"
-    ],
-    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    "allow_headers": ["Content-Type", "ngrok-skip-browser-warning", "Authorization", "X-Requested-With"],
-}})
+# Constants
+RAIN_PER_PULSE = 0.061  # mm per bucket tip for rain gauge
+IR_THRESHOLD = 1.0      # Voltage threshold to detect tipping
 
-bme280 = None
-adc = None
-GAIN = 1
-
-def initialize_BMEsensor():
-    global bme280
-    try:
-        i2c = busio.I2C(board.SCL, board.SDA)
-        bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c, address=0x76)
-        bme280.sea_level_pressure = 1013.25
-        logging.info("BME280 sensor initialized")
-    except Exception as e:
-        logging.error(f"Error initializing BME280 sensor: {str(e)}")
-        bme280 = None
+class SensorManager:
+    def __init__(self):
+        self.bme280 = None
+        self.adc = None
+        self.rain_count = 0
+        self.last_ir_value = 4.4  # Expected idle voltage for IR sensor
         
-def initialize_UVsensor():
-    global adc
-    try:
-        i2c = busio.I2C(board.SCL, board.SDA)
-        adc = ADS.ADS1115(i2c)
-        logging.info("UV sensor initialized")
-    except Exception as e:
-        logging.error(f"Error initializing UV sensor: {str(e)}")
-        adc = None
+        # Initialize sensors
+        self.initialize_sensors()
+        
+    def initialize_sensors(self):
+        self.initialize_BMEsensor()
+        self.initialize_IRsensor()
+
+    def initialize_BMEsensor(self):
+        """Initialize the BME280 sensor for temperature, humidity, and pressure."""
+        try:
+            i2c = busio.I2C(board.SCL, board.SDA)
+            self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c, address=0x76)
+            self.bme280.sea_level_pressure = 1013.25
+            logging.info("BME280 sensor initialized")
+        except Exception as e:
+            logging.error(f"Error initializing BME280 sensor: {str(e)}")
+            self.bme280 = None
+
+    def initialize_IRsensor(self):
+        """Initialize the ADS1115 sensor for IR detection (rain gauge tipping)."""
+        try:
+            i2c = busio.I2C(board.SCL, board.SDA)
+            self.adc = ADS.ADS1115(i2c)
+            logging.info("ADS1115 IR sensor initialized")
+        except Exception as e:
+            logging.error(f"Error initializing ADS1115 IR sensor: {str(e)}")
+            self.adc = None
+
+    def check_rain_tip(self):
+        """Checks if rain gauge bucket has tipped based on IR sensor voltage."""
+        try:
+            if not self.adc:
+                logging.error("ADS1115 not initialized")
+                return
+            
+            # Read voltage from the IR sensor on channel P0
+            channel = AnalogIn(self.adc, ADS.P0)
+            ir_voltage = channel.voltage
+
+            # Detect a tipping event if the voltage drop exceeds the threshold
+            if abs(self.last_ir_value - ir_voltage) > IR_THRESHOLD:
+                self.rain_count += 1
+                logging.info(f"Bucket tipped! Total rain count: {self.rain_count}")
+                
+                # Debounce delay to prevent multiple triggers
+                time.sleep(0.1)  # 100 ms debounce delay
+
+            # Update last IR voltage value
+            self.last_ir_value = ir_voltage
+        except Exception as e:
+            logging.error(f"Error in check_rain_tip: {str(e)}")
+
+    def get_readings(self):
+        """Retrieve sensor readings from the BME280 and ADS1115."""
+        # Ensure sensors are initialized
+        if self.bme280 is None:
+            self.initialize_BMEsensor()
+        if self.adc is None:
+            self.initialize_IRsensor()
+        if not self.bme280 or not self.adc:
+            logging.error("One or more sensors not initialized")
+            return None
+
+        # Perform the rain tipping check
+        self.check_rain_tip()
+        
+        try:
+            # Collect BME280 data
+            sensor_data = {
+                'temperature': round(self.bme280.temperature, 2),
+                'humidity': round(self.bme280.relative_humidity, 2),
+                'pressure': round(self.bme280.pressure, 2),
+                'altitude': round(self.bme280.altitude, 2)
+            }
+            
+            # Collect UV sensor data from ADS1115 on channel P1
+            uv_channel = AnalogIn(self.adc, ADS.P1)
+            uv_voltage = uv_channel.voltage
+            uv_index = (uv_voltage - 1.0) * 7.5 if uv_voltage >= 1.0 else 0
+            sensor_data['uv_index'] = round(uv_index, 2)
+            
+            # Calculate total precipitation
+            sensor_data['precipitation'] = round(self.rain_count * RAIN_PER_PULSE, 2)
+            
+            return sensor_data
+        except Exception as e:
+            logging.error(f"Error reading sensor data: {str(e)}")
+            return None
+
+sensor_manager = SensorManager()
 
 def initialize_ngrok():
+    """Initialize Ngrok tunnel for public access."""
     try:
-        tunnels = ngrok.connect(
-            addr="5002",
-            hostname="helpful-smart-chimp.ngrok-free.app",
-            proto="http"
-        )
+        tunnels = ngrok.connect(addr="5002", hostname="helpful-smart-chimp.ngrok-free.app", proto="http")
         logging.info(f"Ngrok tunnel established at: {tunnels}")
         return "https://helpful-smart-chimp.ngrok-free.app"
     except Exception as e:
@@ -64,79 +131,38 @@ def initialize_ngrok():
         return None
 
 def cleanup():
-    """Cleanup function to disconnect ngrok tunnel"""
+    """Cleanup Ngrok tunnel and GPIO resources on exit."""
     try:
         ngrok.disconnect()
         ngrok.kill()
-        logging.info("Ngrok tunnel closed")
-    except:
-        pass
-
-# Initialize sensors
-initialize_BMEsensor()
-initialize_UVsensor()
-
-def get_sensor_readings():
-    global bme280, adc
-    # Re-initialize sensors if needed
-    if bme280 is None:
-        initialize_BMEsensor()
-    if adc is None:
-        initialize_UVsensor()
-
-    if bme280 is None or adc is None:
-        return None
-
-    try:
-        # Read BME280 data
-        sensor_data = {
-            'temperature': round(bme280.temperature, 2),
-            'humidity': round(bme280.relative_humidity, 2),
-            'pressure': round(bme280.pressure, 2),
-            'altitude': round(bme280.altitude, 2)
-        }
-
-        # Read UV sensor data
-        channel = AnalogIn(adc, ADS.P1)
-        uv_voltage = channel.voltage
-        logging.info(f"Raw UV sensor voltage: {uv_voltage:.2f} V")
-
-        if uv_voltage < 1.0:
-            uv_index = 0
-            logging.info("UV voltage is below 1.0V, setting UV index to 0.")
-        else:
-            uv_index = (uv_voltage - 1.0) * 7.5  # Adjusted scaling factor
-            logging.info(f"Calculated UV index: {uv_index:.2f}")
-
-        sensor_data['uv_index'] = round(uv_index, 2), channel.voltage
-
-        return sensor_data
+        GPIO.cleanup()  # Clean up GPIO resources
+        logging.info("Ngrok tunnel closed and GPIO cleaned up")
     except Exception as e:
-        logging.error(f"Error reading sensor data: {str(e)}")
-        return None
+        logging.error(f"Cleanup failed: {str(e)}")
 
 @app.route('/', methods=["GET"])
 def get_sensor_data():
-    sensor_data = get_sensor_readings()
+    """Endpoint to retrieve current sensor data."""
+    sensor_data = sensor_manager.get_readings()
     if sensor_data is None:
-        logging.error("Failed to read sensor data")
+        logging.error("Failed to retrieve sensor data")
         return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
 
+    # Add current timestamp
     sensor_data['time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     return jsonify(sensor_data)
 
 if __name__ == '__main__':
+    # Register cleanup on exit
     atexit.register(cleanup)
     
+    # Initialize Ngrok and get public URL
     public_url = initialize_ngrok()
-    
     if public_url:
-        print(f"Weather Station is running locally at http://localhost:5002")
-        print(f"Public URL: {public_url}")
+        logging.info(f"Weather Station is running locally at http://localhost:5002")
+        logging.info(f"Public URL: {public_url}")
     else:
-        print("Weather Station is running locally at http://localhost:5002")
-        print("Warning: Ngrok tunnel could not be established")
-    
-    print("Press CTRL+C to quit")
-    
+        logging.warning("Ngrok tunnel could not be established")
+
+    # Start the Flask application
     app.run(host='0.0.0.0', port=5002, debug=False)
