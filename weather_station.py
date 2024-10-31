@@ -15,6 +15,8 @@ import time
 
 logging.basicConfig(level=logging.INFO)
 
+app = Flask(__name__)
+
 CORS(app, resources={
     r"/*": {
         "origins": ["https://iot-weather-black.vercel.app", "https://helpful-smart-chimp.ngrok-free.app"],
