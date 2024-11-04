@@ -19,7 +19,7 @@ app = Flask(__name__)
 
 CORS(app, resources={
     r"/*": {
-        "origins": ["https://iot-weather-black.vercel.app", "https://helpful-smart-chimp.ngrok-free.app"],
+        "origins": ["https://iot-weather-black.vercel.app", "https://helpful-smart-chimp.ngrok-free.app", "http://localhost:3000"],
         "allow_headers": ["Content-Type", "ngrok-skip-browser-warning"]
     }
 })
