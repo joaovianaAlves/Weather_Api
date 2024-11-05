@@ -12,6 +12,10 @@ import atexit
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
 import time
+import pytz
+from supabase import create_client
+from dotenv import load_dotenv
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 
@@ -28,6 +32,10 @@ CORS(app, resources={
 RAIN_PER_PULSE = 0.061  # mm of precipitation per bucket tip
 IR_THRESHOLD = 1.0      # Voltage threshold difference for tipping detection
 MIN_TIP_INTERVAL = 0.05 # Minimum interval in seconds between counts to avoid duplicate detection
+key = os.environ.get("SUPABASE_KEY")
+url = os.environ.get("SUPABASE_URL")
+supabase = create_client(url, key)
+print(supabase)
 
 class SensorManager:
     def __init__(self):
@@ -81,7 +89,14 @@ class SensorManager:
             self.last_ir_value = ir_voltage
         except Exception as e:
             logging.error(f"Error in check_rain_tip: {str(e)}")
-
+            
+    def sendToDb(self, values):
+        try:
+            data = supabase.table("hourly_conditions").insert(values).execute()
+            logging.info("Data sent to database:", data)
+        except Exception as e:
+            logging.error(f"Failed to send data to database: {e}")
+        
     def get_readings(self):
         """Retrieve sensor readings from BME280 and ADS1115."""
         if self.bme280 is None:
@@ -95,32 +110,31 @@ class SensorManager:
         self.check_rain_tip()
         
         try:
-            # Collect BME280 data
             sensor_data = {
                 'temperature': round(self.bme280.temperature, 2),
                 'humidity': round(self.bme280.relative_humidity, 2),
                 'pressure': round(self.bme280.pressure, 2),
                 'altitude': round(self.bme280.altitude, 2)
             }
-            
-            # Collect UV sensor data from ADS1115 on channel P1
             uv_channel = AnalogIn(self.adc, ADS.P1)
             uv_voltage = uv_channel.voltage
             uv_index = (uv_voltage - 1.0) * 7.5 if uv_voltage >= 1.0 else 0
             sensor_data['uv_index'] = round(uv_index, 2)
-            
-            # Calculate total precipitation
             sensor_data['precipitation'] = round(self.rain_count * RAIN_PER_PULSE, 2)
-            
+            local_tz = pytz.timezone('America/Sao_Paulo')
+            local_time = datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')
+            sensor_data['time'] = local_time
+            self.sendToDb(sensor_data)
             return sensor_data
+        
         except Exception as e:
+            
             logging.error(f"Error reading sensor data: {str(e)}")
-            return None
+            return None 
 
 sensor_manager = SensorManager()
 
 def initialize_ngrok():
-    """Initialize Ngrok tunnel for public access."""
     try:
         tunnels = ngrok.connect(addr="5002", hostname="helpful-smart-chimp.ngrok-free.app", proto="http")
         logging.info(f"Ngrok tunnel established at: {tunnels}")
@@ -130,7 +144,6 @@ def initialize_ngrok():
         return None
 
 def cleanup():
-    """Cleanup Ngrok tunnel and GPIO resources on exit."""
     try:
         ngrok.disconnect()
         ngrok.kill()
@@ -140,17 +153,16 @@ def cleanup():
 
 @app.route('/', methods=["GET"])
 def get_sensor_data():
-    """Endpoint to retrieve current sensor data."""
+    
     sensor_data = sensor_manager.get_readings()
     if sensor_data is None:
         logging.error("Failed to retrieve sensor data")
         return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
-    sensor_data['time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     return jsonify(sensor_data)
 
 if __name__ == '__main__':
     atexit.register(cleanup)
-    
     public_url = initialize_ngrok()
     if public_url:
         logging.info(f"Weather Station is running locally at http://localhost:5002")
