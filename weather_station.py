@@ -14,6 +14,7 @@ from adafruit_ads1x15.analog_in import AnalogIn
 import time
 import pytz
 from supabase import create_client
+from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -89,13 +90,6 @@ class SensorManager:
             self.last_ir_value = ir_voltage
         except Exception as e:
             logging.error(f"Error in check_rain_tip: {str(e)}")
-            
-    def sendToDb(self, values):
-        try:
-            data = supabase.table("hourly_conditions").insert(values).execute()
-            logging.info("Data sent to database:", data)
-        except Exception as e:
-            logging.error(f"Failed to send data to database: {e}")
         
     def get_readings(self):
         """Retrieve sensor readings from BME280 and ADS1115."""
@@ -124,7 +118,6 @@ class SensorManager:
             local_tz = pytz.timezone('America/Sao_Paulo')
             local_time = datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')
             sensor_data['time'] = local_time
-            self.sendToDb(sensor_data)
             return sensor_data
         
         except Exception as e:
@@ -132,6 +125,15 @@ class SensorManager:
             logging.error(f"Error reading sensor data: {str(e)}")
             return None 
 
+class DatabaseManager:
+    def dbPost(self, values):
+        try:
+            data = supabase.table("hourly_conditions").insert(values).execute()
+            logging.info("Data sent to database:", data)
+        except Exception as e:
+            logging.error(f"Failed to send data to database: {e}")
+            
+database_manager = DatabaseManager()
 sensor_manager = SensorManager()
 
 def initialize_ngrok():
@@ -151,6 +153,19 @@ def cleanup():
     except Exception as e:
         logging.error(f"Cleanup failed: {str(e)}")
 
+def fetch_and_store_data():
+    sensor_data = sensor_manager.get_readings()
+    if sensor_data:
+        database_manager.dbPost(sensor_data)
+    else:
+        logging.error("No sensor data available to store in the database")
+        
+def start_scheduler():
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(fetch_and_store_data, 'interval', minutes=60)
+    scheduler.start()
+    logging.info("Scheduler started for fetch_and_store_data every hour")
+        
 @app.route('/', methods=["GET"])
 def get_sensor_data():
     
@@ -164,10 +179,13 @@ def get_sensor_data():
 if __name__ == '__main__':
     atexit.register(cleanup)
     public_url = initialize_ngrok()
+    database = database_manager
     if public_url:
         logging.info(f"Weather Station is running locally at http://localhost:5002")
         logging.info(f"Public URL: {public_url}")
     else:
         logging.warning("Ngrok tunnel could not be established")
 
+    start_scheduler()
+    
     app.run(host='0.0.0.0', port=5002, debug=False)
