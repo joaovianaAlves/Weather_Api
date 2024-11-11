@@ -1,7 +1,7 @@
 import os
 import board
 import busio
-import logging
+import threading
 import RPi.GPIO as GPIO
 from flask import Flask, jsonify
 from adafruit_bme280 import basic as adafruit_bme280
@@ -18,8 +18,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
-
 app = Flask(__name__)
 
 CORS(app, resources={
@@ -29,80 +27,78 @@ CORS(app, resources={
     }
 })
 
-# Constants
-RAIN_PER_PULSE = 0.061  # mm of precipitation per bucket tip
-IR_THRESHOLD = 1.0      # Voltage threshold difference for tipping detection
-MIN_TIP_INTERVAL = 0.05 # Minimum interval in seconds between counts to avoid duplicate detection
+RAIN_PER_PULSE = 0.061
+IR_THRESHOLD = 3.5
+MIN_TIP_INTERVAL = 0.05
 key = os.environ.get("SUPABASE_KEY")
 url = os.environ.get("SUPABASE_URL")
 supabase = create_client(url, key)
-print(supabase)
-
 class SensorManager:
     def __init__(self):
         self.bme280 = None
         self.adc = None
         self.rain_count = 0
-        self.last_ir_value = 4.4
-        self.last_tip_time = time.time()
-        self.initialize_sensors()
-        
-    def initialize_sensors(self):
+        self.state = 0
+        self.initialize_ADC()
         self.initialize_BMEsensor()
-        self.initialize_IRsensor()
 
     def initialize_BMEsensor(self):
         try:
             i2c = busio.I2C(board.SCL, board.SDA)
             self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c, address=0x76)
             self.bme280.sea_level_pressure = 1013.25
-            logging.info("BME280 sensor initialized")
+            print("BME280 sensor initialized")
         except Exception as e:
-            logging.error(f"Error initializing BME280 sensor: {str(e)}")
+            print(f"Error initializing BME280 sensor: {str(e)}")
             self.bme280 = None
 
-    def initialize_IRsensor(self):
+    def initialize_ADC(self):
         try:
-            i2c = busio.I2C(board.SCL, board.SDA)
-            self.adc = ADS.ADS1115(i2c)
-            logging.info("ADS1115 IR sensor initialized")
+            adc = ADS.ADS1115(self.i2c)
+            print("ADS1115 ADC initialized")
+            return adc
         except Exception as e:
-            logging.error(f"Error initializing ADS1115 IR sensor: {str(e)}")
-            self.adc = None
-
-    def check_rain_tip(self):
-        """Check for rain gauge tipping event and increment rain count accurately."""
-        try:
-            if not self.adc:
-                logging.error("ADS1115 not initialized")
-                return
-            
-            channel = AnalogIn(self.adc, ADS.P0)
-            ir_voltage = channel.voltage
-            current_time = time.time()
-
-            # Detect a tip if the voltage drop exceeds the threshold and debounced by interval
-            if abs(self.last_ir_value - ir_voltage) > IR_THRESHOLD and (current_time - self.last_tip_time) > MIN_TIP_INTERVAL:
-                self.rain_count += 1
-                self.last_tip_time = current_time
-                logging.info(f"Bucket tipped! Total rain count: {self.rain_count}")
-
-            self.last_ir_value = ir_voltage
-        except Exception as e:
-            logging.error(f"Error in check_rain_tip: {str(e)}")
-        
-    def get_readings(self):
-        """Retrieve sensor readings from BME280 and ADS1115."""
-        if self.bme280 is None:
-            self.initialize_BMEsensor()
-        if self.adc is None:
-            self.initialize_IRsensor()
-        if not self.bme280 or not self.adc:
-            logging.error("One or more sensors not initialized")
+            print(f"Error initializing ADS1115 ADC: {str(e)}")
             return None
 
-        self.check_rain_tip()
-        
+    def check_rain_tip(self):
+        try:
+            if not self.adc:
+                print("ADS1115 not initialized")
+                return
+            
+            i2c = busio.I2C(board.SCL, board.SDA)
+            ads = ADS.ADS1115(i2c)
+            channel = AnalogIn(ads, ADS.P0)
+            
+            voltage = channel.voltage
+            
+            if self.state == 0 and voltage >= IR_THRESHOLD:
+                self.rain_count += 1
+                self.state = 1
+                print(f"Rain detected! Total rain count: {self.rain_count}")
+            
+            if voltage < IR_THRESHOLD:
+                self.state = 0
+        except Exception as e:
+            print(f"Error in check_rain_tip: {str(e)}")
+    
+    def start_rain_monitoring(self):
+        self.monitoring = True
+        self.rain_thread = threading.Thread(target=self._rain_monitor_loop)
+        self.rain_thread.daemon = True
+        self.rain_thread.start()
+
+    def _rain_monitor_loop(self):
+        while self.monitoring:
+            self.check_rain_tip()
+            time.sleep(MIN_TIP_INTERVAL)
+    
+    def get_readings(self):
+        if not self.bme280 or not self.adc:
+            print("One or more sensors not initialized")
+            return None
+            
         try:
             sensor_data = {
                 'temperature': round(self.bme280.temperature, 2),
@@ -112,26 +108,32 @@ class SensorManager:
             }
             uv_channel = AnalogIn(self.adc, ADS.P1)
             uv_voltage = uv_channel.voltage
-            uv_index = (uv_voltage - 1.0) * 7.5 if uv_voltage >= 1.0 else 0
+            uv_index = max((uv_voltage - 1.0) * 7.5, 0)
             sensor_data['uv_index'] = round(uv_index, 2)
             sensor_data['precipitation'] = round(self.rain_count * RAIN_PER_PULSE, 2)
-            local_tz = pytz.timezone('America/Sao_Paulo')
-            local_time = datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')
-            sensor_data['time'] = local_time
+            sensor_data['time'] = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%Y-%m-%d %H:%M:%S')
             return sensor_data
         
         except Exception as e:
             
-            logging.error(f"Error reading sensor data: {str(e)}")
+            print(f"Error reading sensor data: {str(e)}")
             return None 
 
 class DatabaseManager:
-    def dbPost(self, values):
+    def db_post(self, values):
         try:
             data = supabase.table("hourly_conditions").insert(values).execute()
-            logging.info("Data sent to database:", data)
+            print("Data sent to database:", data)
         except Exception as e:
-            logging.error(f"Failed to send data to database: {e}")
+            print(f"Failed to send data to database: {e}")
+            
+    def db_get(self):
+        try:
+            data = supabase.table("hourly_conditions").select("*").execute()
+            return data
+        except Exception as e:
+            print(f"Failed to get data to database: {e}")
+            return None
             
 database_manager = DatabaseManager()
 sensor_manager = SensorManager()
@@ -139,53 +141,59 @@ sensor_manager = SensorManager()
 def initialize_ngrok():
     try:
         tunnels = ngrok.connect(addr="5002", hostname="helpful-smart-chimp.ngrok-free.app", proto="http")
-        logging.info(f"Ngrok tunnel established at: {tunnels}")
+        print(f"Ngrok tunnel established at: {tunnels}")
         return "https://helpful-smart-chimp.ngrok-free.app"
     except Exception as e:
-        logging.error(f"Error initializing ngrok: {str(e)}")
+        print(f"Error initializing ngrok: {str(e)}")
         return None
 
 def cleanup():
     try:
         ngrok.disconnect()
         ngrok.kill()
-        logging.info("Ngrok tunnel closed and GPIO cleaned up")
+        sensor_manager.monitoring = False
+        GPIO.cleanup() 
+        print("Ngrok tunnel closed and GPIO cleaned up")
     except Exception as e:
-        logging.error(f"Cleanup failed: {str(e)}")
+        print(f"Cleanup failed: {str(e)}")
 
 def fetch_and_store_data():
     sensor_data = sensor_manager.get_readings()
     if sensor_data:
-        database_manager.dbPost(sensor_data)
+        database_manager.db_post(sensor_data)
     else:
-        logging.error("No sensor data available to store in the database")
+        print("No sensor data available to store in the database")
         
 def start_scheduler():
     scheduler = BackgroundScheduler()
-    scheduler.add_job(fetch_and_store_data, 'interval', minutes=60)
+    scheduler.add_job(fetch_and_store_data, 'interval', seconds=10)
     scheduler.start()
-    logging.info("Scheduler started for fetch_and_store_data every hour")
+    print("Scheduler started for fetch_and_store_data every hour")
         
 @app.route('/', methods=["GET"])
-def get_sensor_data():
+def get_db_data():
+    database = database_manager.db_get()
+    if database is None:
+        print("Failed to retrieve database data")
+        return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
+    return jsonify(database)
     
+def get_sensor_data():
     sensor_data = sensor_manager.get_readings()
     if sensor_data is None:
-        logging.error("Failed to retrieve sensor data")
+        print("Failed to retrieve sensor data")
         return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
-
     return jsonify(sensor_data)
 
 if __name__ == '__main__':
     atexit.register(cleanup)
     public_url = initialize_ngrok()
-    database = database_manager
     if public_url:
-        logging.info(f"Weather Station is running locally at http://localhost:5002")
-        logging.info(f"Public URL: {public_url}")
+        print(f"Weather Station is running locally at http://localhost:5002")
+        print(f"Public URL: {public_url}")
     else:
-        logging.warning("Ngrok tunnel could not be established")
+        print("Ngrok tunnel could not be established")
 
+    sensor_manager.start_rain_monitoring()
     start_scheduler()
-    
     app.run(host='0.0.0.0', port=5002, debug=False)
