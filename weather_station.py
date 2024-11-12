@@ -28,29 +28,31 @@ CORS(app, resources={
 })
 
 RAIN_PER_PULSE = 0.061
-IR_THRESHOLD = 3.5
-MIN_TIP_INTERVAL = 0.05
+IR_THRESHOLD = 0.35
+MIN_TIP_INTERVAL = 0.1
 key = os.environ.get("SUPABASE_KEY")
 url = os.environ.get("SUPABASE_URL")
 supabase = create_client(url, key)
+print("Supabase client initialized")  # Debug statement
+
 class SensorManager:
     def __init__(self):
-        self.bme280 = None
-        self.adc = None
+        self.i2c = busio.I2C(board.SCL, board.SDA)
+        self.bme280 = self.initialize_BMEsensor()
+        self.adc = self.initialize_ADC()
         self.rain_count = 0
-        self.state = 0
-        self.initialize_ADC()
-        self.initialize_BMEsensor()
+        self.state = False
+        self.monitoring = False
 
     def initialize_BMEsensor(self):
         try:
-            i2c = busio.I2C(board.SCL, board.SDA)
-            self.bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c, address=0x76)
-            self.bme280.sea_level_pressure = 1013.25
+            bme280 = adafruit_bme280.Adafruit_BME280_I2C(self.i2c, address=0x76)
+            bme280.sea_level_pressure = 1013.25
             print("BME280 sensor initialized")
+            return bme280
         except Exception as e:
             print(f"Error initializing BME280 sensor: {str(e)}")
-            self.bme280 = None
+            return None
 
     def initialize_ADC(self):
         try:
@@ -67,19 +69,18 @@ class SensorManager:
                 print("ADS1115 not initialized")
                 return
             
-            i2c = busio.I2C(board.SCL, board.SDA)
-            ads = ADS.ADS1115(i2c)
-            channel = AnalogIn(ads, ADS.P0)
-            
+            channel = AnalogIn(self.adc, ADS.P0) 
             voltage = channel.voltage
+            # print(f"Rain sensor voltage: {voltage}, {self.state}")
             
-            if self.state == 0 and voltage >= IR_THRESHOLD:
+            if not self.state and voltage < IR_THRESHOLD:
                 self.rain_count += 1
-                self.state = 1
+                self.state = True
                 print(f"Rain detected! Total rain count: {self.rain_count}")
             
-            if voltage < IR_THRESHOLD:
-                self.state = 0
+            elif voltage >= IR_THRESHOLD:
+                self.state = False
+                
         except Exception as e:
             print(f"Error in check_rain_tip: {str(e)}")
     
@@ -88,6 +89,8 @@ class SensorManager:
         self.rain_thread = threading.Thread(target=self._rain_monitor_loop)
         self.rain_thread.daemon = True
         self.rain_thread.start()
+        print("Rain monitoring started")
+        print(self.monitoring)
 
     def _rain_monitor_loop(self):
         while self.monitoring:
@@ -112,12 +115,12 @@ class SensorManager:
             sensor_data['uv_index'] = round(uv_index, 2)
             sensor_data['precipitation'] = round(self.rain_count * RAIN_PER_PULSE, 2)
             sensor_data['time'] = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%Y-%m-%d %H:%M:%S')
+            print("Sensor data retrieved:", sensor_data)  # Debug statement
             return sensor_data
         
         except Exception as e:
-            
             print(f"Error reading sensor data: {str(e)}")
-            return None 
+            return None
 
 class DatabaseManager:
     def db_post(self, values):
@@ -130,9 +133,10 @@ class DatabaseManager:
     def db_get(self):
         try:
             data = supabase.table("hourly_conditions").select("*").execute()
+            print("Data retrieved from database")  # Debug statement
             return data
         except Exception as e:
-            print(f"Failed to get data to database: {e}")
+            print(f"Failed to get data from database: {e}")
             return None
             
 database_manager = DatabaseManager()
@@ -166,24 +170,26 @@ def fetch_and_store_data():
         
 def start_scheduler():
     scheduler = BackgroundScheduler()
-    scheduler.add_job(fetch_and_store_data, 'interval', seconds=10)
+    scheduler.add_job(fetch_and_store_data, 'interval', minutes=20)
     scheduler.start()
-    print("Scheduler started for fetch_and_store_data every hour")
+    print("Scheduler started for fetch_and_store_data every 20 minutes")  # Corrected message
         
 @app.route('/', methods=["GET"])
-def get_db_data():
-    database = database_manager.db_get()
-    if database is None:
-        print("Failed to retrieve database data")
-        return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
-    return jsonify(database)
-    
 def get_sensor_data():
     sensor_data = sensor_manager.get_readings()
     if sensor_data is None:
         print("Failed to retrieve sensor data")
         return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
     return jsonify(sensor_data)
+
+@app.route('/data', methods=["GET"])
+def get_db_data():
+    database_response = database_manager.db_get()
+    if database_response is None:
+        print("Failed to retrieve database data")
+        return jsonify({'error': 'Database error'}), 500
+
+    return jsonify(database_response.data)
 
 if __name__ == '__main__':
     atexit.register(cleanup)
