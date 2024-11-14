@@ -29,7 +29,7 @@ CORS(app, resources={
 
 RAIN_PER_PULSE = 0.061
 IR_THRESHOLD = 0.35
-MIN_TIP_INTERVAL = 0.1
+MIN_TIP_INTERVAL = 0.05
 key = os.environ.get("SUPABASE_KEY")
 url = os.environ.get("SUPABASE_URL")
 supabase = create_client(url, key)
