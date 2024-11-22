@@ -7,7 +7,6 @@ from flask import Flask, jsonify
 from adafruit_bme280 import basic as adafruit_bme280
 from flask_cors import CORS
 from datetime import datetime
-from pyngrok import ngrok
 import atexit
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
@@ -20,12 +19,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-CORS(app, resources={
-    r"/*": {
-        "origins": ["https://iot-weather-black.vercel.app", "https://helpful-smart-chimp.ngrok-free.app", "http://localhost:3000"],
-        "allow_headers": ["Content-Type", "ngrok-skip-browser-warning"]
-    }
-})
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 RAIN_PER_PULSE = 0.061
 IR_THRESHOLD = 0.35
@@ -115,7 +109,7 @@ class SensorManager:
             sensor_data['uv_index'] = round(uv_index, 2)
             sensor_data['precipitation'] = round(self.rain_count * RAIN_PER_PULSE, 2)
             sensor_data['time'] = datetime.now(pytz.timezone('America/Sao_Paulo')).strftime('%Y-%m-%d %H:%M:%S')
-            print("Sensor data retrieved:", sensor_data)  # Debug statement
+            print("Sensor data retrieved:", sensor_data)
             return sensor_data
         
         except Exception as e:
@@ -133,31 +127,33 @@ class DatabaseManager:
     def db_get(self):
         try:
             data = supabase.table("hourly_conditions").select("*").execute()
-            print("Data retrieved from database")  # Debug statement
+            print("Data retrieved from database")
             return data
         except Exception as e:
             print(f"Failed to get data from database: {e}")
             return None
-            
+        
+    def db_realTime(self, values):
+        try:
+            supabase.table("real_time").insert(values).execute()
+            response = supabase.table("real_time").select("*").order('id', desc=False).execute()
+            data = response.data
+            if len(data) > 1:
+                ids_to_delete = [record['id'] for record in data[:-1]]
+                print(f"Deleting records with IDs: {ids_to_delete}")
+
+                supabase.table("real_time").delete().in_('id', ids_to_delete).execute()
+        except Exception as e:
+            print(f"Failed to get data from database: {e}")
+            return None
+    
 database_manager = DatabaseManager()
 sensor_manager = SensorManager()
 
-def initialize_ngrok():
-    try:
-        tunnels = ngrok.connect(addr="5002", hostname="helpful-smart-chimp.ngrok-free.app", proto="http")
-        print(f"Ngrok tunnel established at: {tunnels}")
-        return "https://helpful-smart-chimp.ngrok-free.app"
-    except Exception as e:
-        print(f"Error initializing ngrok: {str(e)}")
-        return None
-
 def cleanup():
     try:
-        ngrok.disconnect()
-        ngrok.kill()
         sensor_manager.monitoring = False
-        GPIO.cleanup() 
-        print("Ngrok tunnel closed and GPIO cleaned up")
+        GPIO.cleanup()
     except Exception as e:
         print(f"Cleanup failed: {str(e)}")
 
@@ -167,39 +163,30 @@ def fetch_and_store_data():
         database_manager.db_post(sensor_data)
     else:
         print("No sensor data available to store in the database")
+
+def fetch_and_store_realtime_data():
+    sensor_data = sensor_manager.get_readings()
+    if sensor_data:
+        database_manager.db_realTime(sensor_data)
+    else:
+        print("No sensor data available to store in the database")
         
-def start_scheduler():
+def db_scheduler():
     scheduler = BackgroundScheduler()
     scheduler.add_job(fetch_and_store_data, 'interval', minutes=20)
     scheduler.start()
-    print("Scheduler started for fetch_and_store_data every 20 minutes")  # Corrected message
-        
-@app.route('/', methods=["GET"])
-def get_sensor_data():
-    sensor_data = sensor_manager.get_readings()
-    if sensor_data is None:
-        print("Failed to retrieve sensor data")
-        return jsonify({'error': 'Sensor not initialized or unavailable'}), 500
-    return jsonify(sensor_data)
-
-@app.route('/data', methods=["GET"])
-def get_db_data():
-    database_response = database_manager.db_get()
-    if database_response is None:
-        print("Failed to retrieve database data")
-        return jsonify({'error': 'Database error'}), 500
-
-    return jsonify(database_response.data)
+    print("Scheduler started for fetch_and_store_data every 20 minutes")
+    
+def real_time_scheduler():
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(fetch_and_store_realtime_data, 'interval', minutes=2)
+    scheduler.start()
+    print("Scheduler started for fetch_and_store_data every 2 minutes")
 
 if __name__ == '__main__':
     atexit.register(cleanup)
-    public_url = initialize_ngrok()
-    if public_url:
-        print(f"Weather Station is running locally at http://localhost:5002")
-        print(f"Public URL: {public_url}")
-    else:
-        print("Ngrok tunnel could not be established")
 
     sensor_manager.start_rain_monitoring()
-    start_scheduler()
-    app.run(host='0.0.0.0', port=5002, debug=False)
+    db_scheduler()
+    real_time_scheduler()
+    app.run(host='0.0.0.0', port=5003, debug=False)
